@@ -41,4 +41,29 @@ export class AppController {
     const result = await this.appService.createContainer(containerName);
     return { message: result };
   }
+
+  @Post('directory')
+  async createDirectory(
+    @Body('container') container: string,
+    @Body('directory') directory: string,
+  ): Promise<{ message: string }> {
+    const result = await this.appService.createDirectory(container, directory);
+    return { message: result };
+  }
+
+  @Get('directory')
+  async listDirectory(
+    @Query('container') container: string,
+    @Query('directory') directory: string,
+  ): Promise<{ blobs: string[]; directories: string[] }> {
+    return await this.appService.listDirectory(container, directory);
+  }
+
+  @Get('directories')
+  async listAllDirectories(
+    @Query('container') container: string,
+  ): Promise<{ directories: string[] }> {
+    const directories = await this.appService.listAllDirectories(container);
+    return { directories };
+  }
 }

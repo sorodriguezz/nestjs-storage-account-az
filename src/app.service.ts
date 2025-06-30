@@ -95,4 +95,67 @@ export class AppService {
       throw error;
     }
   }
+
+  /**
+   * Crea un "directorio" (blob vacío terminado en /) en un contenedor
+   */
+  public async createDirectory(
+    containerName: string,
+    directoryName: string,
+  ): Promise<string> {
+    const blobService = this.getBlobServiceInstance();
+    const containerClient = blobService.getContainerClient(containerName);
+    const dirName = directoryName.endsWith('/')
+      ? directoryName
+      : directoryName + '/';
+    const blockBlobClient = containerClient.getBlockBlobClient(dirName);
+    await blockBlobClient.upload('', 0); // Blob vacío
+    return `Directorio '${dirName}' creado en el contenedor '${containerName}'`;
+  }
+
+  /**
+   * Lista blobs y "subdirectorios" dentro de un directorio simulado
+   */
+  public async listDirectory(
+    containerName: string,
+    directoryName: string,
+  ): Promise<{ blobs: string[]; directories: string[] }> {
+    const blobService = this.getBlobServiceInstance();
+    const containerClient = blobService.getContainerClient(containerName);
+    const prefix = directoryName.endsWith('/')
+      ? directoryName
+      : directoryName + '/';
+    const iter = containerClient.listBlobsByHierarchy('/', { prefix });
+    const blobs: string[] = [];
+    const directories: string[] = [];
+    for await (const item of iter) {
+      if (item.kind === 'prefix') {
+        directories.push(item.name);
+      } else {
+        blobs.push(item.name);
+      }
+    }
+    return { blobs, directories };
+  }
+
+  /**
+   * Lista todos los directorios (recursivo) de un contenedor
+   */
+  public async listAllDirectories(containerName: string): Promise<string[]> {
+    const blobService = this.getBlobServiceInstance();
+    const containerClient = blobService.getContainerClient(containerName);
+    const allDirs: Set<string> = new Set();
+
+    async function walk(prefix: string) {
+      const iter = containerClient.listBlobsByHierarchy('/', { prefix });
+      for await (const item of iter) {
+        if (item.kind === 'prefix') {
+          allDirs.add(item.name);
+          await walk(item.name); // Recursivo para subdirectorios
+        }
+      }
+    }
+    await walk('');
+    return Array.from(allDirs);
+  }
 }
