@@ -1,49 +1,51 @@
 import { Injectable } from '@nestjs/common';
-
-import { BlobServiceClient, BlockBlobClient } from '@azure/storage-blob';
-import { uuid } from 'uuidv4';
+import { BlobServiceClient } from '@azure/storage-blob';
+import { v4 as uuidv4 } from 'uuid';
 
 const connectionStringEnv = '';
 
 @Injectable()
 export class AppService {
-  private containerName: string;
+  private blobService?: BlobServiceClient;
 
   private getBlobServiceInstance() {
-    const connectionString = connectionStringEnv;
-    const blobClientService =
-      BlobServiceClient.fromConnectionString(connectionString);
-
-    return blobClientService;
+    if (!this.blobService) {
+      if (!connectionStringEnv) {
+        throw new Error('AZURE_STORAGE_CONNECTION_STRING no configurado');
+      }
+      this.blobService =
+        BlobServiceClient.fromConnectionString(connectionStringEnv);
+    }
+    return this.blobService;
   }
 
-  private getBlobClient(imageName: string): BlockBlobClient {
-    const blobService = this.getBlobServiceInstance();
-    const containerName = this.containerName;
-    const containerClient = blobService.getContainerClient(containerName);
-    const blockBlobClient = containerClient.getBlockBlobClient(imageName);
-
-    return blockBlobClient;
+  private normalizePrefix(prefix?: string): string | undefined {
+    if (!prefix || prefix === '/') return undefined; // sin prefijo => todo el contenedor
+    return prefix.endsWith('/') ? prefix : `${prefix}/`;
   }
 
   public async uploadFile(
     file: Express.Multer.File,
     containerName: string,
   ): Promise<string> {
-    this.containerName = containerName;
-    const extension = file.originalname.split('.').pop();
-    const file_name = uuid() + '.' + extension;
-    const blockBlobClient = this.getBlobClient(file_name);
-    const fileUrl = blockBlobClient.url;
-    await blockBlobClient.uploadData(file.buffer);
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
 
-    return fileUrl;
+    const extension = (file.originalname.split('.').pop() || '').trim();
+    const fileName = `${uuidv4()}${extension ? '.' + extension : ''}`;
+
+    const blockBlobClient = containerClient.getBlockBlobClient(fileName);
+    await blockBlobClient.uploadData(file.buffer, {
+      blobHTTPHeaders: {
+        blobContentType: file.mimetype || 'application/octet-stream',
+      },
+    });
+    return blockBlobClient.url;
   }
 
   public async getAllFile(containerName: string): Promise<any> {
-    this.containerName = containerName;
-    const blobService = this.getBlobServiceInstance();
-    const containerClient = blobService.getContainerClient(containerName);
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
     const blobs = containerClient.listBlobsFlat();
     const fileUrls: string[] = [];
 
@@ -52,110 +54,91 @@ export class AppService {
       fileUrls.push(blockBlobClient.url);
     }
 
-    return {
-      containerName: containerName,
-      total: fileUrls.length,
-      fileUrls: fileUrls,
-    };
+    return { containerName, total: fileUrls.length, fileUrls };
   }
 
   public async getAllContainers(): Promise<any> {
-    try {
-      const blobService = this.getBlobServiceInstance();
-      const containers = blobService.listContainers();
-      const containerNames: string[] = [];
-
-      for await (const container of containers) {
-        containerNames.push(container.name);
-      }
-
-      return {
-        total: containerNames.length,
-        containerNames: containerNames,
-      };
-    } catch (error) {
-      console.error('Error listing containers:', error);
-      throw error;
-    }
+    const service = this.getBlobServiceInstance();
+    const containers = service.listContainers();
+    const containerNames: string[] = [];
+    for await (const c of containers) containerNames.push(c.name);
+    return { total: containerNames.length, containerNames };
   }
 
   public async createContainer(containerName: string): Promise<string> {
-    try {
-      const blobService = this.getBlobServiceInstance();
-      const containerClient = blobService.getContainerClient(containerName);
-
-      await containerClient.createIfNotExists({
-        access: 'blob',
-      });
-
-      console.log(`Container '${containerName}' created or already exists`);
-      return `Container '${containerName}' is ready`;
-    } catch (error) {
-      console.error('Error creating container:', error);
-      throw error;
-    }
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
+    await containerClient.createIfNotExists({ access: 'blob' });
+    return `Container '${containerName}' is ready`;
   }
 
-  /**
-   * Crea un "directorio" (blob vacío terminado en /) en un contenedor
-   */
   public async createDirectory(
     containerName: string,
     directoryName: string,
   ): Promise<string> {
-    const blobService = this.getBlobServiceInstance();
-    const containerClient = blobService.getContainerClient(containerName);
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
     const dirName = directoryName.endsWith('/')
       ? directoryName
-      : directoryName + '/';
+      : `${directoryName}/`;
     const blockBlobClient = containerClient.getBlockBlobClient(dirName);
-    await blockBlobClient.upload('', 0); // Blob vacío
+    await blockBlobClient.upload('', 0);
     return `Directorio '${dirName}' creado en el contenedor '${containerName}'`;
   }
 
-  /**
-   * Lista blobs y "subdirectorios" dentro de un directorio simulado
-   */
   public async listDirectory(
     containerName: string,
     directoryName: string,
   ): Promise<{ blobs: string[]; directories: string[] }> {
-    const blobService = this.getBlobServiceInstance();
-    const containerClient = blobService.getContainerClient(containerName);
-    const prefix = directoryName.endsWith('/')
-      ? directoryName
-      : directoryName + '/';
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
+    const prefix = this.normalizePrefix(directoryName) || '';
     const iter = containerClient.listBlobsByHierarchy('/', { prefix });
     const blobs: string[] = [];
     const directories: string[] = [];
     for await (const item of iter) {
-      if (item.kind === 'prefix') {
-        directories.push(item.name);
-      } else {
-        blobs.push(item.name);
-      }
+      if (item.kind === 'prefix') directories.push(item.name);
+      else blobs.push(item.name);
     }
     return { blobs, directories };
   }
 
-  /**
-   * Lista todos los directorios (recursivo) de un contenedor
-   */
   public async listAllDirectories(containerName: string): Promise<string[]> {
-    const blobService = this.getBlobServiceInstance();
-    const containerClient = blobService.getContainerClient(containerName);
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
     const allDirs: Set<string> = new Set();
 
-    async function walk(prefix: string) {
+    const walk = async (prefix: string) => {
       const iter = containerClient.listBlobsByHierarchy('/', { prefix });
       for await (const item of iter) {
         if (item.kind === 'prefix') {
           allDirs.add(item.name);
-          await walk(item.name); // Recursivo para subdirectorios
+          await walk(item.name);
         }
       }
-    }
+    };
+
     await walk('');
-    return Array.from(allDirs);
+    return Array.from(allDirs).sort();
+  }
+
+  public async countExtensionInPrefix(
+    containerName: string,
+    extension: string,
+    prefix?: string,
+  ): Promise<{ container: string; prefix?: string; count: number }> {
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
+
+    const normalizedPrefix = this.normalizePrefix(prefix);
+    let count = 0;
+
+    for await (const blob of containerClient.listBlobsFlat({
+      prefix: normalizedPrefix,
+    })) {
+      if (blob.name.toLowerCase().endsWith(extension)) count++;
+    }
+
+    return { container: containerName, prefix: normalizedPrefix, count };
   }
 }
