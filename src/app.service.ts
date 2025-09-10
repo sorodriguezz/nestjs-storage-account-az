@@ -3,7 +3,6 @@ import { BlobServiceClient } from '@azure/storage-blob';
 import { v4 as uuidv4 } from 'uuid';
 
 const connectionStringEnv = '';
-
 @Injectable()
 export class AppService {
   private blobService?: BlobServiceClient;
@@ -140,5 +139,82 @@ export class AppService {
     }
 
     return { container: containerName, prefix: normalizedPrefix, count };
+  }
+
+  public async findHeaviestByExtension(
+    containerName: string,
+    extension: string,
+    prefix?: string,
+  ): Promise<any> {
+    const service = this.getBlobServiceInstance();
+    const containerClient = service.getContainerClient(containerName);
+
+    const normalizedPrefix = this.normalizePrefix(prefix);
+
+    const ext = (extension || '').trim().toLowerCase();
+    if (!ext) throw new Error('extension es requerida');
+    if (!ext.startsWith('.')) {
+      throw new Error('extension debe comenzar con "." (ej: .parquet, .csv)');
+    }
+
+    let maxSize = -1;
+    let maxBlob:
+      | {
+          name: string;
+          path: string;
+          directory: string;
+          size: number;
+          url: string;
+          lastModified?: string;
+        }
+      | undefined;
+
+    const iterator = normalizedPrefix
+      ? containerClient.listBlobsFlat({ prefix: normalizedPrefix })
+      : containerClient.listBlobsFlat();
+
+    for await (const item of iterator) {
+      if (item.name.endsWith('/')) continue;
+
+      if (!item.name.toLowerCase().endsWith(ext)) continue;
+
+      let size = item.properties?.contentLength;
+      let lastModified = item.properties?.lastModified;
+
+      if (size === undefined) {
+        const props = await containerClient
+          .getBlobClient(item.name)
+          .getProperties();
+        size = props.contentLength ?? 0;
+        lastModified = props.lastModified ?? lastModified;
+      }
+
+      if (!size || size <= 0) continue;
+
+      if (size > maxSize) {
+        const path = item.name;
+        const slashIdx = path.lastIndexOf('/');
+        const directory = slashIdx >= 0 ? path.slice(0, slashIdx + 1) : '';
+        const nameOnly = slashIdx >= 0 ? path.slice(slashIdx + 1) : path;
+        const url = containerClient.getBlockBlobClient(path).url;
+
+        maxSize = size;
+        maxBlob = {
+          name: nameOnly,
+          path,
+          directory,
+          size,
+          url,
+          lastModified: lastModified?.toISOString(),
+        };
+      }
+    }
+
+    return {
+      container: containerName,
+      searchedPrefix: normalizedPrefix,
+      extension: ext,
+      blob: maxBlob,
+    };
   }
 }

@@ -92,4 +92,24 @@ export class AppController {
       prefix,
     );
   }
+
+  @Get('heaviest')
+  async getHeaviest(
+    @Query('container') container: string,
+    @Query('extension') extension: string,
+    @Query('prefix') prefix?: string,
+  ): Promise<any> {
+    if (!container) throw new BadRequestException('container es requerido');
+    if (!extension) throw new BadRequestException('extension es requerida');
+    if (!extension.startsWith('.')) {
+      throw new BadRequestException(
+        'extension debe comenzar con "." (ej: .parquet, .csv)',
+      );
+    }
+    return this.appService.findHeaviestByExtension(
+      container,
+      extension,
+      prefix,
+    );
+  }
 }
